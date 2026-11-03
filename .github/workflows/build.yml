@@ -415,8 +415,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Debian 11
-            image: debian:11-slim
           - name: Debian 12
             image: debian:12-slim
           - name: Debian 13
