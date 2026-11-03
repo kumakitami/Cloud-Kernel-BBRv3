@@ -482,48 +482,6 @@ jobs:
           test -s "prepared-source/$source_archive"
           install -Dm644 "prepared-source/$source_archive" "release-assets/$source_archive"
 
-      - name: Sign Release Assets
-        env:
-          PACKAGE_SIGNING_GPG_FINGERPRINT: ${{ vars.PACKAGE_SIGNING_GPG_FINGERPRINT }}
-          PACKAGE_SIGNING_GPG_PASSPHRASE: ${{ secrets.PACKAGE_SIGNING_GPG_PASSPHRASE }}
-          PACKAGE_SIGNING_GPG_PRIVATE_KEY_B64: ${{ secrets.PACKAGE_SIGNING_GPG_PRIVATE_KEY_B64 }}
-        run: |
-          if [ -z "$PACKAGE_SIGNING_GPG_PRIVATE_KEY_B64" ]; then
-            echo "PACKAGE_SIGNING_GPG_PRIVATE_KEY_B64 is not configured" >&2
-            exit 1
-          fi
-          if [ -z "$PACKAGE_SIGNING_GPG_FINGERPRINT" ]; then
-            echo "PACKAGE_SIGNING_GPG_FINGERPRINT is not configured" >&2
-            exit 1
-          fi
-
-          sudo apt-get update
-          sudo apt-get install -y gnupg rpm
-
-          signing_dir="$RUNNER_TEMP/cloud-kernel-release-signing"
-          mkdir -p "$signing_dir"
-          chmod 700 "$signing_dir"
-          trap 'rm -rf "$signing_dir"' EXIT
-
-          private_key="$signing_dir/openpgp-private-key.asc"
-          printf '%s' "$PACKAGE_SIGNING_GPG_PRIVATE_KEY_B64" \
-            | base64 --decode > "$private_key"
-          chmod 600 "$private_key"
-
-          signing_args=(
-            release-assets
-            "$private_key"
-            "$PACKAGE_SIGNING_GPG_FINGERPRINT"
-          )
-          if [ -n "$PACKAGE_SIGNING_GPG_PASSPHRASE" ]; then
-            passphrase_file="$signing_dir/openpgp-passphrase"
-            printf '%s' "$PACKAGE_SIGNING_GPG_PASSPHRASE" > "$passphrase_file"
-            chmod 600 "$passphrase_file"
-            signing_args+=("$passphrase_file")
-          fi
-
-          .github/scripts/sign_release_assets.sh "${signing_args[@]}"
-
       - name: Create Release
         uses: softprops/action-gh-release@v3
         env:
@@ -544,8 +502,6 @@ jobs:
             - **Kernel suffix (LOCALVERSION):** `${{ needs.prepare.outputs.localversion_display }}`
             - **Package targets:** Debian/Ubuntu `.deb`, generic Fedora/Enterprise Linux `.rpm`, generic Alpine Linux `.apk`, and Arch Linux `.pkg.tar.zst` (x86_64 only)
             - **Validated targets:** Fedora 43/44, Enterprise Linux 9/10, Alpine Linux 3.21/3.22/3.23/3.24, and Arch Linux x86_64
-            - **OpenPGP signing fingerprint:** `${{ vars.PACKAGE_SIGNING_GPG_FINGERPRINT }}`
-            - **Signature files:** native RPM signatures, Arch package `.sig` files, `SHA256SUMS`, `SHA256SUMS.asc`, and `cloud-kernel-signing.asc`
             - **Corresponding source:** `linux-${{ needs.prepare.outputs.kernel_version }}-${{ needs.prepare.outputs.debian_arch }}-source.tar.zst` (covered by `SHA256SUMS.asc`); it includes the project license/notice bundle and resolved Debian/XanMod notices under `linux/Documentation/cloud-kernel-bbrv3/`.
             - **Applied patches:**
               - `Debian Patches Collection` (from [kernel-team/linux](https://salsa.debian.org/kernel-team/linux/))
@@ -584,8 +540,6 @@ jobs:
             - **内核后缀 (LOCALVERSION)：** `${{ needs.prepare.outputs.localversion_display }}`
             - **软件包目标：** Debian/Ubuntu `.deb`、通用 Fedora/Enterprise Linux `.rpm`、通用 Alpine Linux `.apk`，以及 Arch Linux `.pkg.tar.zst`（仅 x86_64）
             - **验证目标：** Fedora 43/44、Enterprise Linux 9/10、Alpine Linux 3.21/3.22/3.23/3.24，以及 Arch Linux x86_64
-            - **OpenPGP 签名指纹：** `${{ vars.PACKAGE_SIGNING_GPG_FINGERPRINT }}`
-            - **签名文件：** RPM 原生签名、Arch 软件包 `.sig`、`SHA256SUMS`、`SHA256SUMS.asc` 和 `cloud-kernel-signing.asc`
             - **对应源代码：** `linux-${{ needs.prepare.outputs.kernel_version }}-${{ needs.prepare.outputs.debian_arch }}-source.tar.zst`（由 `SHA256SUMS.asc` 覆盖签名）；其中包含位于 `linux/Documentation/cloud-kernel-bbrv3/` 的项目许可证/通知文件集合及已解析的 Debian/XanMod 通知。
             - **应用补丁：**
               - `Debian 补丁集合`（来自 [kernel-team/linux](https://salsa.debian.org/kernel-team/linux/)）
@@ -613,7 +567,4 @@ jobs:
             release-assets/*.deb
             release-assets/*.config
             release-assets/*.json
-            release-assets/*.sig
-            release-assets/*.rsa.pub
-            release-assets/*.asc
             release-assets/SHA256SUMS
