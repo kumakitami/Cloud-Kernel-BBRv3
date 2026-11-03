@@ -743,179 +743,9 @@ jobs:
               [ ! -e /boot/initramfs-linux-cloud-bbrv3.img ]
             '
 
-  build-apk:
-    name: Build Generic Alpine APKs for ${{ needs.prepare.outputs.arch }}
-    runs-on: ${{ needs.prepare.outputs.runner }}
-    needs: [prepare, prepare-source, build-kernel]
-    environment:
-      name: ${{ github.ref == 'refs/heads/main' && 'release-signing' || 'build-testing' }}
-    steps:
-      - name: Checkout Workflow Source Code
-        uses: actions/checkout@v7
-
-      - name: Download Compiled Kernel
-        uses: actions/download-artifact@v8
-        with:
-          name: compiled-kernel-${{ needs.prepare.outputs.kernel_version }}-${{ needs.prepare.outputs.arch }}
-          path: compiled
-
-      - name: Build Generic APK Packages
-        env:
-          APK_SIGNING_PRIVATE_KEY_B64: ${{ secrets.APK_SIGNING_PRIVATE_KEY_B64 }}
-          DIAGNOSTIC_BUILD: ${{ needs.prepare.outputs.diagnostic_build }}
-          REQUIRE_PERSISTENT_SIGNING: ${{ github.ref == 'refs/heads/main' }}
-        run: |
-          signing_dir="$RUNNER_TEMP/cloud-kernel-apk-signing"
-          mkdir -p "$signing_dir"
-          chmod 700 "$signing_dir"
-          trap 'rm -rf "$signing_dir"' EXIT
-
-          private_key_path=""
-          if [ -n "$APK_SIGNING_PRIVATE_KEY_B64" ]; then
-            private_key_path="$signing_dir/cloud-kernel-bbrv3.rsa"
-            printf '%s' "$APK_SIGNING_PRIVATE_KEY_B64" | base64 --decode > "$private_key_path"
-            chmod 600 "$private_key_path"
-          fi
-
-          run_apk_build() {
-            docker_args=(
-              --rm
-              --volume "$GITHUB_WORKSPACE:/workspace"
-              --workdir /workspace
-              --env DIAGNOSTIC_BUILD="$DIAGNOSTIC_BUILD"
-              --env REQUIRE_PERSISTENT_SIGNING="$REQUIRE_PERSISTENT_SIGNING"
-            )
-            if [ -n "$private_key_path" ]; then
-              docker_args+=(
-                --volume "$private_key_path:/run/secrets/cloud-kernel-bbrv3.rsa:ro"
-                --env APK_SIGNING_PRIVATE_KEY_FILE=/run/secrets/cloud-kernel-bbrv3.rsa
-              )
-            fi
-
-            docker run "${docker_args[@]}" \
-              alpine:3.21 \
-              sh -c 'apk add --no-cache bash coreutils && exec bash .github/scripts/build_apk.sh "$@"' -- \
-                "${{ needs.prepare.outputs.kernel_version }}" \
-                "${{ needs.prepare.outputs.arch }}" \
-                generic \
-                compiled/compiled-kernel.tar.zst \
-                dist/apk/generic
-          }
-
-          if [ "$DIAGNOSTIC_BUILD" != "true" ]; then
-            run_apk_build
-            exit 0
-          fi
-
-          diagnostic_dir=kernel-build-diagnostics/apk-generic
-          mkdir -p "$diagnostic_dir"
-          set +e
-          run_apk_build > "$diagnostic_dir/build.log" 2>&1
-          build_status=$?
-          set -e
-          if [ "$build_status" -ne 0 ]; then
-            echo "::group::APK build diagnostics"
-            grep -nEi 'BTF|pahole|fatal|error:|failed|killed|no space|undefined reference|untrusted' \
-              "$diagnostic_dir/build.log" | tail -n 200 || true
-            echo "::endgroup::"
-            echo "::group::Last 500 APK build log lines"
-            tail -n 500 "$diagnostic_dir/build.log"
-            echo "::endgroup::"
-            exit "$build_status"
-          fi
-
-      - name: Collect APK Build Diagnostics
-        if: always() && needs.prepare.outputs.diagnostic_build == 'true'
-        run: |
-          diagnostic_dir=kernel-build-diagnostics/apk-generic
-          mkdir -p "$diagnostic_dir"
-          {
-            date -Is
-            uname -a
-            echo "CPU count: $(nproc)"
-            free -h
-            df -h
-            docker version
-            docker image inspect alpine:3.21 --format '{{json .RepoDigests}}' || true
-          } > "$diagnostic_dir/environment.log" 2>&1
-          cp packaging/apk/APKBUILD.in "$diagnostic_dir/" 2>/dev/null || true
-          cp ".build/apk/generic-${{ needs.prepare.outputs.arch }}/aports/testing/linux-cloud-bbrv3/APKBUILD" \
-            "$diagnostic_dir/generated.APKBUILD" 2>/dev/null || true
-          cp ".build/apk/generic-${{ needs.prepare.outputs.arch }}/aports/testing/linux-cloud-bbrv3/src/linux/.config" \
-            "$diagnostic_dir/final.config" 2>/dev/null || true
-          for log in "$diagnostic_dir"/*.log; do
-            [ -f "$log" ] || continue
-            gzip -9 -f "$log"
-          done
-
-      - name: Upload APK Build Diagnostics
-        if: always() && needs.prepare.outputs.diagnostic_build == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: kernel-build-diagnostics-apk-generic-${{ needs.prepare.outputs.kernel_version }}-${{ needs.prepare.outputs.arch }}
-          path: kernel-build-diagnostics/apk-generic/
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload Generic APK Packages
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-apk-generic-${{ needs.prepare.outputs.arch }}
-          path: |
-            dist/apk/generic/*.apk
-            dist/apk/generic/*.rsa.pub
-          if-no-files-found: error
-
-  validate-apk:
-    name: Validate Generic APK on Alpine ${{ matrix.version }} for ${{ needs.prepare.outputs.arch }}
-    runs-on: ${{ needs.prepare.outputs.runner }}
-    needs: [prepare, build-apk]
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ['3.21', '3.22', '3.23', '3.24']
-    steps:
-      - name: Checkout Workflow Source Code
-        uses: actions/checkout@v7
-
-      - name: Download Generic APK Packages
-        uses: actions/download-artifact@v8
-        with:
-          name: release-apk-generic-${{ needs.prepare.outputs.arch }}
-          path: packages
-
-      - name: Validate Installer Lifecycle and Dependencies
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            --volume "$GITHUB_WORKSPACE/packages:/packages:ro" \
-            alpine:${{ matrix.version }} \
-            sh -euxc '
-              apk update
-              apk add bash linux-firmware-none mkinitfs
-
-              if [ "$(apk --print-arch)" = x86_64 ]; then
-                apk add syslinux
-                sed -i "s/^default=.*/default=virt/; s|^root=.*|root=/dev/vda3|" \
-                  /etc/update-extlinux.conf
-              fi
-
-              bash /workspace/.github/scripts/test_install_kernel_apk.sh /packages
-            '
-
-      - name: Validate Installer Bootloader Integration
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            alpine:${{ matrix.version }} \
-            sh -euxc '
-              apk add --no-cache bash
-              bash /workspace/.github/scripts/test_install_kernel_bootloaders.sh
-            '
-
   create-release:
     name: Create Multi-Format Release
-    needs: [prepare, prepare-source, build-deb, validate-deb, build-rpm, validate-rpm, build-apk, validate-apk, build-arch, validate-arch]
+    needs: [prepare, prepare-source, build-deb, validate-deb, build-rpm, validate-rpm, build-arch, validate-arch]
     if: >-
       always() &&
       github.ref == 'refs/heads/main' &&
@@ -925,10 +755,8 @@ jobs:
       needs.validate-deb.result == 'success' &&
       needs.build-rpm.result == 'success' &&
       needs.validate-rpm.result == 'success' &&
-      needs.build-apk.result == 'success' &&
-      needs.validate-apk.result == 'success' &&
       (needs.prepare.outputs.arch != 'x86_64' ||
-        (needs.build-arch.result == 'success' && needs.validate-arch.result == 'success'))
+      (needs.build-arch.result == 'success' && needs.validate-arch.result == 'success'))
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
@@ -1087,7 +915,6 @@ jobs:
             release-assets/*.config
             release-assets/*.json
             release-assets/*.rpm
-            release-assets/*.apk
             release-assets/*.pkg.tar.zst
             release-assets/*-source.tar.zst
             release-assets/*.sig
