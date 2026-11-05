@@ -55,6 +55,8 @@ if [ ! -f "$compiled_archive" ]; then
   exit 1
 fi
 
+sudo bash "$script_dir/build_pahole.sh" "${RUNNER_TEMP:-/tmp}/dwarves-v1.31"
+
 rm -rf "$work_dir"
 mkdir -p "$work_dir" "$output_dir"
 tar --zstd -xf "$compiled_archive" -C "$work_dir"
