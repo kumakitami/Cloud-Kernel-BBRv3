@@ -451,7 +451,6 @@ jobs:
     needs: [prepare, prepare-source, build-deb, validate-deb]
     if: >-
       always() &&
-      github.ref == 'refs/heads/main' &&
       needs.prepare.result == 'success' &&
       needs.prepare-source.result == 'success' &&
       needs.build-deb.result == 'success' &&
